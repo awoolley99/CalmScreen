@@ -5,7 +5,13 @@
 expo-env.d.ts
 # @end expo-cli
 
+node_modules/
+.DS_Store
+
 .expo/
 .env
 .env.*
 !.env.example
+
+# Nested native/Xcode prototype folder; this repo tracks the Expo app at root.
+CalmScreen/
