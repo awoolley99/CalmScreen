@@ -37,6 +37,17 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     ],
   ],
   scheme: 'calmscreen',
+  updates: {
+    url: 'https://u.expo.dev/43b298de-4d8e-4f65-9af1-fa0e667c3af9',
+  },
+  runtimeVersion: {
+    policy: 'appVersion',
+  },
+  extra: {
+    eas: {
+      projectId: '43b298de-4d8e-4f65-9af1-fa0e667c3af9',
+    },
+  },
   experiments: {
     typedRoutes: true,
   },
