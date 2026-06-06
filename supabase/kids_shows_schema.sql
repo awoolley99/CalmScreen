@@ -2,7 +2,8 @@ create extension if not exists "pgcrypto";
 
 create table if not exists public.kids_shows (
   id uuid primary key default gen_random_uuid(),
-  tmdb_id integer not null unique,
+  tmdb_id integer not null,
+  tmdb_media_type text not null default 'tv' check (tmdb_media_type in ('tv', 'movie')),
   tvmaze_id integer,
   title text not null,
   age_range text not null default '2-5',
@@ -22,6 +23,9 @@ create table if not exists public.kids_shows (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+create unique index if not exists kids_shows_tmdb_media_unique
+on public.kids_shows (tmdb_media_type, tmdb_id);
 
 create table if not exists public.show_platforms (
   id uuid primary key default gen_random_uuid(),

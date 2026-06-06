@@ -173,12 +173,15 @@ function unique(values) {
 }
 
 function textBundle(show, details) {
-  const keywords = details?.keywords?.results?.map((item) => item.name).join(' ') || '';
+  const keywordItems = details?.keywords?.results || details?.keywords?.keywords || [];
+  const keywords = keywordItems.map((item) => item.name).join(' ');
   const genres = details?.genres?.map((item) => item.name).join(' ') || '';
   const networks = details?.networks?.map((item) => item.name).join(' ') || '';
   return compact([
     show.name,
+    show.title,
     show.original_name,
+    show.original_title,
     show.overview,
     details?.overview,
     genres,
@@ -220,9 +223,9 @@ function tmdbUrl(path, params = {}) {
   return url.toString();
 }
 
-async function getDiscoverPage(page, genreExpression) {
+async function getDiscoverPage(mediaType, page, genreExpression) {
   return fetchJson(
-    tmdbUrl('/discover/tv', {
+    tmdbUrl(`/discover/${mediaType}`, {
       sort_by: 'popularity.desc',
       include_adult: 'false',
       include_null_first_air_dates: 'false',
@@ -236,35 +239,46 @@ async function getDiscoverPage(page, genreExpression) {
 
 async function collectCandidates() {
   const candidates = new Map();
-  const genreQueries = ['10762', '10751', '16'];
+  const genreQueriesByMediaType = {
+    tv: ['10762', '10751', '16'],
+    movie: ['10751', '16'],
+  };
 
-  for (const genreExpression of genreQueries) {
-    for (let page = 1; page <= 25 && candidates.size < TARGET_LIMIT * 3; page += 1) {
-      const data = await getDiscoverPage(page, genreExpression);
-      for (const show of data.results || []) {
-        if (!candidates.has(show.id)) {
-          candidates.set(show.id, show);
+  for (const [mediaType, genreQueries] of Object.entries(genreQueriesByMediaType)) {
+    for (const genreExpression of genreQueries) {
+      for (let page = 1; page <= 25 && candidates.size < TARGET_LIMIT * 4; page += 1) {
+        const data = await getDiscoverPage(mediaType, page, genreExpression);
+        for (const show of data.results || []) {
+          const key = `${mediaType}:${show.id}`;
+          if (!candidates.has(key)) {
+            candidates.set(key, { ...show, tmdb_media_type: mediaType });
+          }
         }
+        await sleep(REQUEST_DELAY_MS);
+        if (page >= (data.total_pages || 1)) break;
       }
-      await sleep(REQUEST_DELAY_MS);
-      if (page >= (data.total_pages || 1)) break;
     }
   }
 
   return [...candidates.values()].sort((a, b) => (b.popularity || 0) - (a.popularity || 0));
 }
 
-async function getTmdbDetails(tmdbId) {
+async function getTmdbDetails(tmdbId, mediaType) {
+  const appendToResponse =
+    mediaType === 'movie'
+      ? 'external_ids,release_dates,keywords'
+      : 'external_ids,content_ratings,keywords';
+
   return fetchJson(
-    tmdbUrl(`/tv/${tmdbId}`, {
-      append_to_response: 'external_ids,content_ratings,keywords',
+    tmdbUrl(`/${mediaType}/${tmdbId}`, {
+      append_to_response: appendToResponse,
       language: 'en-US',
     })
   );
 }
 
-async function getWatchProviders(tmdbId) {
-  const data = await fetchJson(tmdbUrl(`/tv/${tmdbId}/watch/providers`));
+async function getWatchProviders(tmdbId, mediaType) {
+  const data = await fetchJson(tmdbUrl(`/${mediaType}/${tmdbId}/watch/providers`));
   const region = data.results?.[TMDB_REGION] || {};
   const buckets = ['flatrate', 'free', 'ads'];
   const providers = [];
@@ -303,29 +317,43 @@ async function getTvmazeMetadata(details) {
 function isClearlyForKids(show, details) {
   const bundle = textBundle(show, details);
   const genreIds = new Set(show.genre_ids || details?.genres?.map((genre) => genre.id) || []);
-  const ratingValues = details?.content_ratings?.results?.map((rating) => rating.rating).filter(Boolean) || [];
+  const genreNames = new Set(details?.genres?.map((genre) => compact(genre.name)) || []);
+  const tvRatingValues = details?.content_ratings?.results?.map((rating) => rating.rating).filter(Boolean) || [];
+  const movieRatingValues =
+    details?.release_dates?.results
+      ?.flatMap((country) => country.release_dates || [])
+      .map((release) => release.certification)
+      .filter(Boolean) || [];
+  const ratingValues = [...tvRatingValues, ...movieRatingValues];
 
   if (EXCLUDE_TERMS.some((term) => bundle.includes(term))) return false;
-  if (ratingValues.some((rating) => ['TV-MA', 'TV-14'].includes(rating))) return false;
+  if (ratingValues.some((rating) => ['TV-MA', 'TV-14', 'R', 'NC-17'].includes(rating))) return false;
 
-  const hasKidsGenre = genreIds.has(10762);
-  const hasFamilyGenre = genreIds.has(10751);
-  const hasAnimationGenre = genreIds.has(16);
+  const hasKidsGenre = genreIds.has(10762) || genreNames.has('kids');
+  const hasFamilyGenre = genreIds.has(10751) || genreNames.has('family');
+  const hasAnimationGenre = genreIds.has(16) || genreNames.has('animation');
   const hasChildKeyword = CHILD_KEYWORDS.some((term) => bundle.includes(term));
   const hasChildNetwork = CHILD_NETWORK_TERMS.some((term) => bundle.includes(term));
-  const hasKidRating = ratingValues.some((rating) => ['TV-Y', 'TV-Y7', 'TV-G', 'G'].includes(rating));
+  const hasKidRating = ratingValues.some((rating) => ['TV-Y', 'TV-Y7', 'TV-G', 'G', 'PG'].includes(rating));
 
   return hasKidsGenre || hasKidRating || hasChildNetwork || (hasFamilyGenre && (hasAnimationGenre || hasChildKeyword));
 }
 
 function inferAgeRange(show, details) {
   const bundle = textBundle(show, details);
-  const ratings = details?.content_ratings?.results?.map((rating) => rating.rating) || [];
+  const ratings = [
+    ...(details?.content_ratings?.results?.map((rating) => rating.rating) || []),
+    ...(details?.release_dates?.results
+      ?.flatMap((country) => country.release_dates || [])
+      .map((release) => release.certification)
+      .filter(Boolean) || []),
+  ];
 
   if (bundle.includes('baby') || bundle.includes('nursery')) return '1-3';
   if (bundle.includes('toddler') || bundle.includes('preschool') || ratings.includes('TV-Y')) return '2-5';
   if (ratings.includes('TV-Y7')) return '6-10';
-  if (ratings.includes('TV-G')) return '4-8';
+  if (ratings.includes('TV-G') || ratings.includes('G')) return '4-8';
+  if (ratings.includes('PG')) return '5-10';
   if (bundle.includes('teen')) return '8-12';
 
   return '3-7';
@@ -360,7 +388,7 @@ function scoreEducational(show, details) {
 
 function scoreStimulation(show, details) {
   const bundle = textBundle(show, details);
-  const runtime = firstNumber(details?.episode_run_time) || show.runtime_minutes || 22;
+  const runtime = details?.runtime || firstNumber(details?.episode_run_time) || show.runtime_minutes || 22;
   let score = 5;
 
   for (const term of STIMULATING_TERMS) {
@@ -384,14 +412,19 @@ function firstNumber(values) {
 }
 
 function normalizeShow(show, details, tvmaze, platforms) {
-  const runtime = tvmaze?.runtime || firstNumber(details?.episode_run_time) || details?.last_episode_to_air?.runtime || null;
-  const episodes = tvmaze?._embedded?.episodes?.length || details?.number_of_episodes || null;
+  const mediaType = show.tmdb_media_type || 'tv';
+  const runtime =
+    mediaType === 'movie'
+      ? details?.runtime || null
+      : tvmaze?.runtime || firstNumber(details?.episode_run_time) || details?.last_episode_to_air?.runtime || null;
+  const episodes = mediaType === 'movie' ? null : tvmaze?._embedded?.episodes?.length || details?.number_of_episodes || null;
   const country = details?.origin_country?.[0] || show.origin_country?.[0] || tvmaze?.network?.country?.code || null;
 
   return {
     tmdb_id: show.id,
+    tmdb_media_type: mediaType,
     tvmaze_id: tvmaze?.id || null,
-    title: details?.name || show.name,
+    title: details?.name || details?.title || show.name || show.title,
     age_range: inferAgeRange(show, details),
     animation_type: inferAnimationType(show, details),
     educational_score: scoreEducational(show, details),
@@ -400,52 +433,53 @@ function normalizeShow(show, details, tvmaze, platforms) {
     country,
     episodes,
     runtime_minutes: runtime,
-    status: details?.status || tvmaze?.status || null,
+    status: mediaType === 'movie' ? details?.status || 'Released' : details?.status || tvmaze?.status || null,
     last_checked: new Date().toISOString(),
     popularity: show.popularity || details?.popularity || null,
     overview: details?.overview || show.overview || null,
-    first_air_date: details?.first_air_date || show.first_air_date || null,
-    last_air_date: details?.last_air_date || null,
+    first_air_date: details?.first_air_date || show.first_air_date || details?.release_date || show.release_date || null,
+    last_air_date: mediaType === 'movie' ? null : details?.last_air_date || null,
   };
 }
 
 async function enrichCandidate(show) {
-  const details = await getTmdbDetails(show.id);
+  const mediaType = show.tmdb_media_type || 'tv';
+  const details = await getTmdbDetails(show.id, mediaType);
   await sleep(REQUEST_DELAY_MS);
 
   if (!isClearlyForKids(show, details)) return null;
 
   const [platforms, tvmaze] = await Promise.all([
-    getWatchProviders(show.id).catch(() => []),
-    getTvmazeMetadata(details),
+    getWatchProviders(show.id, mediaType).catch(() => []),
+    mediaType === 'tv' ? getTvmazeMetadata(details) : Promise.resolve(null),
   ]);
 
   return normalizeShow(show, details, tvmaze, platforms);
 }
 
 async function upsertShows(shows) {
-  const rowsByTmdbId = new Map();
+  const rowsByTmdbKey = new Map();
 
   for (let index = 0; index < shows.length; index += 100) {
     const chunk = shows.slice(index, index + 100);
     const { data, error } = await supabase
       .from('kids_shows')
-      .upsert(chunk, { onConflict: 'tmdb_id' })
-      .select('id, tmdb_id');
+      .upsert(chunk, { onConflict: 'tmdb_media_type,tmdb_id' })
+      .select('id, tmdb_id, tmdb_media_type');
 
     if (error) throw error;
 
     for (const row of data || []) {
-      rowsByTmdbId.set(row.tmdb_id, row.id);
+      rowsByTmdbKey.set(`${row.tmdb_media_type}:${row.tmdb_id}`, row.id);
     }
   }
 
-  return rowsByTmdbId;
+  return rowsByTmdbKey;
 }
 
-async function upsertPlatforms(shows, idsByTmdbId) {
+async function upsertPlatforms(shows, idsByTmdbKey) {
   for (const show of shows) {
-    const showId = idsByTmdbId.get(show.tmdb_id);
+    const showId = idsByTmdbKey.get(`${show.tmdb_media_type}:${show.tmdb_id}`);
     if (!showId) continue;
 
     await supabase.from('show_platforms').delete().eq('show_id', showId);

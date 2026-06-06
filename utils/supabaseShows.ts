@@ -6,6 +6,7 @@ const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 type KidsShowRow = {
   id: string;
   tmdb_id: number;
+  tmdb_media_type: 'tv' | 'movie' | null;
   title: string;
   age_range: string | null;
   animation_type: string | null;
@@ -72,7 +73,7 @@ function databaseRowToAnalysis(row: KidsShowRow, similarRows: KidsShowRow[] = []
   return {
     id: row.title.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-'),
     title: row.title,
-    type: 'show',
+    type: row.tmdb_media_type === 'movie' ? 'movie' : 'show',
     ageRange: row.age_range || '2-5',
     overallRating: getRatingLabel(stimulationScore),
     overallScore: stimulationScore,
@@ -120,7 +121,7 @@ export async function getDatabaseShowAnalysis(title: string): Promise<ShowAnalys
 
   const rows = await supabaseGet<KidsShowRow[]>('kids_shows', {
     select:
-      'id,tmdb_id,title,age_range,animation_type,educational_score,stimulation_score,platforms,country,episodes,runtime_minutes,status,overview,last_checked',
+      'id,tmdb_id,tmdb_media_type,title,age_range,animation_type,educational_score,stimulation_score,platforms,country,episodes,runtime_minutes,status,overview,last_checked',
     title: `ilike.${title.trim()}`,
     limit: '1',
   });
@@ -131,7 +132,7 @@ export async function getDatabaseShowAnalysis(title: string): Promise<ShowAnalys
   const lowerBound = Math.max(1, (show.stimulation_score || 5) - 1);
   const upperBound = Math.min(10, (show.stimulation_score || 5) + 1);
   const similarRows = await supabaseGet<KidsShowRow[]>('kids_shows', {
-    select: 'title,age_range,stimulation_score',
+    select: 'title,tmdb_media_type,age_range,stimulation_score',
     stimulation_score: `gte.${lowerBound}`,
     and: `(stimulation_score.lte.${upperBound},title.neq.${show.title})`,
     order: 'popularity.desc.nullslast',
